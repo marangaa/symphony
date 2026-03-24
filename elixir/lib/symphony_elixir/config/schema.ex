@@ -50,6 +50,10 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
+      field(:supabase_url, :string)
+      field(:supabase_secret_key, :string)
+      field(:supabase_view_name, :string, default: "tracker_work_items_v1")
+      field(:supabase_items_table, :string, default: "roadmap_items")
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -59,7 +63,19 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :supabase_url,
+          :supabase_secret_key,
+          :supabase_view_name,
+          :supabase_items_table,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
@@ -369,7 +385,13 @@ defmodule SymphonyElixir.Config.Schema do
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
+        supabase_url: resolve_secret_setting(settings.tracker.supabase_url, System.get_env("SUPABASE_URL")),
+        supabase_secret_key:
+          resolve_secret_setting(
+            settings.tracker.supabase_secret_key,
+            System.get_env("SUPABASE_SECRET_KEY")
+          )
     }
 
     workspace = %{

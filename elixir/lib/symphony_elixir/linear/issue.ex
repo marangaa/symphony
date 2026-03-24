@@ -11,11 +11,13 @@ defmodule SymphonyElixir.Linear.Issue do
     :priority,
     :state,
     :branch_name,
+    :repo_full_name,
     :url,
     :assignee_id,
     blocked_by: [],
     labels: [],
     assigned_to_worker: true,
+    repo_candidates: [],
     created_at: nil,
     updated_at: nil
   ]
@@ -28,6 +30,8 @@ defmodule SymphonyElixir.Linear.Issue do
           priority: integer() | nil,
           state: String.t() | nil,
           branch_name: String.t() | nil,
+          repo_full_name: String.t() | nil,
+          repo_candidates: [map()],
           url: String.t() | nil,
           assignee_id: String.t() | nil,
           labels: [String.t()],

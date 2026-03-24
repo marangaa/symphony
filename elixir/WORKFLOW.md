@@ -1,17 +1,17 @@
 ---
 tracker:
-  kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  kind: supabase
+  supabase_url: $SUPABASE_URL
+  supabase_secret_key: $SUPABASE_SECRET_KEY
+  supabase_view_name: tracker_work_items_v1
+  supabase_items_table: roadmap_items
   active_states:
-    - Todo
-    - In Progress
-    - Merging
-    - Rework
+    - planned
+    - in_progress
+    - review
   terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
+    - done
+    - archived
     - Done
 polling:
   interval_ms: 5000
@@ -19,12 +19,58 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+    mkdir -p repos
+    python - <<'PY'
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+
+    def safe_name(full_name, index):
+        base = (full_name or f"repo-{index}").split("/")[-1]
+        cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("._")
+        return cleaned or f"repo-{index}"
+
+    raw = os.environ.get("SYMPHONY_REPO_CANDIDATES_JSON", "[]")
+    try:
+        candidates = json.loads(raw)
+    except Exception:
+        candidates = []
+
+    if isinstance(candidates, dict):
+        candidates = [candidates]
+
+    normalized = []
+    for repo in candidates or []:
+        if not isinstance(repo, dict):
+            continue
+        repo_url = (repo.get("repo_url") or "").strip()
+        repo_full_name = (repo.get("repo_full_name") or "").strip()
+        if repo_url:
+            normalized.append({"repo_url": repo_url, "repo_full_name": repo_full_name})
+
+    if not normalized:
+        repo_url = (os.environ.get("SYMPHONY_REPO_URL") or "").strip()
+        repo_full_name = (os.environ.get("SYMPHONY_REPO_FULL_NAME") or "").strip()
+        if not repo_url and repo_full_name:
+            repo_url = f"https://github.com/{repo_full_name}.git"
+        if not repo_url:
+            print("Missing repo configuration for workspace bootstrap", file=sys.stderr)
+            sys.exit(1)
+        normalized = [{"repo_url": repo_url, "repo_full_name": repo_full_name}]
+
+    for idx, repo in enumerate(normalized, 1):
+        target = os.path.join("repos", safe_name(repo.get("repo_full_name"), idx))
+        if os.path.exists(target):
+            continue
+        subprocess.check_call(["git", "clone", "--depth", "1", repo["repo_url"], target])
+
+    print(f"Cloned {len(normalized)} repo(s) into ./repos")
+    PY
+    if command -v corepack >/dev/null 2>&1; then
+      corepack enable || true
     fi
-  before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -36,7 +82,7 @@ codex:
     type: workspaceWrite
 ---
 
-You are working on a Linear ticket `{{ issue.identifier }}`
+You are working on a tracker item `{{ issue.identifier }}`
 
 {% if attempt %}
 Continuation context:
@@ -69,9 +115,13 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+Workspace bootstrap clones configured tenant repositories into `./repos/<repo-name>`.
+Before implementing, inspect cloned repositories and choose the most appropriate target.
+If none is appropriate for the requested change, raise a clear blocker note explaining why.
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+## Prerequisite: tracker connectivity is available
+
+The agent should be able to read and update tracker items via the configured tracker adapter. If required tracker credentials are missing, stop and ask the user to configure them.
 
 ## Default posture
 

@@ -164,6 +164,9 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - `lib/`: application code and Mix tasks
 - `test/`: ExUnit coverage for runtime behavior
+- `docs/architecture.md`: end-to-end runtime architecture (ingestion, dispatch, retries, completion)
+- `docs/repo-connection-playbook.md`: how Symphony connects to a target repository via workflow + hooks
+- `docs/deferred-features-backlog.md`: non-priority feature ideas tracked for later
 - `WORKFLOW.md`: in-repo workflow contract used by local runs
 - `../.codex/`: repository-local Codex skills and setup helpers
 
@@ -188,6 +191,7 @@ Optional environment variables:
 - `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
 
 `make e2e` runs two live scenarios:
+
 - one with a local worker
 - one with SSH workers
 

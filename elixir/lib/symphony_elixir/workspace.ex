@@ -298,7 +298,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          stderr_to_stdout: true,
+          env: hook_env(issue_context)
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -319,7 +323,18 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    hook_exports = build_remote_hook_exports(issue_context)
+
+    remote_script =
+      [
+        hook_exports,
+        "cd #{shell_escape(workspace)}",
+        command
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(" && ")
+
+    case run_remote_command(worker_host, remote_script, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -456,25 +471,59 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      repo_full_name: Map.get(issue, :repo_full_name),
+      repo_url: Map.get(issue, :url),
+      repo_candidates: Map.get(issue, :repo_candidates, [])
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      repo_full_name: nil,
+      repo_url: nil,
+      repo_candidates: []
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      repo_full_name: nil,
+      repo_url: nil,
+      repo_candidates: []
     }
+  end
+
+  defp hook_env(issue_context) when is_map(issue_context) do
+    [
+      {"SYMPHONY_ISSUE_ID", issue_context.issue_id || ""},
+      {"SYMPHONY_ISSUE_IDENTIFIER", issue_context.issue_identifier || ""},
+      {"SYMPHONY_REPO_FULL_NAME", issue_context.repo_full_name || ""},
+      {"SYMPHONY_REPO_URL", issue_context.repo_url || ""},
+      {"SYMPHONY_REPO_CANDIDATES_JSON", encode_repo_candidates(issue_context.repo_candidates)}
+    ]
+  end
+
+  defp encode_repo_candidates(candidates) when is_list(candidates) do
+    Jason.encode!(candidates)
+  rescue
+    _error -> "[]"
+  end
+
+  defp encode_repo_candidates(_candidates), do: "[]"
+
+  defp build_remote_hook_exports(issue_context) when is_map(issue_context) do
+    issue_context
+    |> hook_env()
+    |> Enum.map(fn {key, value} -> "export #{key}=#{shell_escape(value)}" end)
+    |> Enum.join(" && ")
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do

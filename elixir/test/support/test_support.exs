@@ -97,6 +97,10 @@ defmodule SymphonyElixir.TestSupport do
           tracker_api_token: "token",
           tracker_project_slug: "project",
           tracker_assignee: nil,
+          tracker_supabase_url: nil,
+          tracker_supabase_secret_key: nil,
+          tracker_supabase_view_name: "tracker_work_items_v1",
+          tracker_supabase_items_table: "roadmap_items",
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
@@ -134,6 +138,10 @@ defmodule SymphonyElixir.TestSupport do
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_supabase_url = Keyword.get(config, :tracker_supabase_url)
+    tracker_supabase_secret_key = Keyword.get(config, :tracker_supabase_secret_key)
+    tracker_supabase_view_name = Keyword.get(config, :tracker_supabase_view_name)
+    tracker_supabase_items_table = Keyword.get(config, :tracker_supabase_items_table)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
@@ -172,6 +180,10 @@ defmodule SymphonyElixir.TestSupport do
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
+        "  supabase_url: #{yaml_value(tracker_supabase_url)}",
+        "  supabase_secret_key: #{yaml_value(tracker_supabase_secret_key)}",
+        "  supabase_view_name: #{yaml_value(tracker_supabase_view_name)}",
+        "  supabase_items_table: #{yaml_value(tracker_supabase_items_table)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",
