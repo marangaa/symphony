@@ -97,7 +97,7 @@ function Get-CandidateTrackerItems {
         [string]$TenantId
     )
 
-    $query = "tracker_work_items_v1?select=tracker_item_id,tracker_identifier,title,state,assigned_to_worker,updated_at&tenant_id=eq.$TenantId&state=in.(planned,in_progress,review)&order=updated_at.desc&limit=25"
+    $query = "tracker_work_items_v1?select=tracker_item_id,tracker_identifier,title,state,assigned_to_worker,updated_at&tenant_id=eq.$TenantId&state=in.(todo,in_progress,rework,merging)&order=updated_at.desc&limit=25"
     return Invoke-SupabaseGet -SupabaseUrl $SupabaseUrl -Headers $Headers -PathAndQuery $query
 }
 
@@ -232,7 +232,7 @@ try {
 Write-Section "Tracker Candidates"
 $candidates = Get-CandidateTrackerItems -SupabaseUrl $supabaseUrl -Headers $headers -TenantId $TenantId
 $candidateCount = if ($candidates) { $candidates.Count } else { 0 }
-Write-Host "Eligible tracker rows (planned/in_progress/review): $candidateCount"
+Write-Host "Eligible tracker rows (todo/in_progress/rework/merging): $candidateCount"
 if ($candidateCount -gt 0) {
     $candidates | Select-Object -First 10 tracker_identifier, state, title, assigned_to_worker, updated_at | Format-Table
 } else {

@@ -6,9 +6,10 @@ tracker:
   supabase_view_name: tracker_work_items_v1
   supabase_items_table: roadmap_items
   active_states:
-    - planned
+    - todo
     - in_progress
-    - review
+    - rework
+    - merging
   terminal_states:
     - done
     - archived
@@ -75,7 +76,7 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=high --model gpt-5.2-codex app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
