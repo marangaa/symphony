@@ -52,6 +52,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      # Supabase tracker fields
+      field(:supabase_url, :string)
+      field(:supabase_secret_key, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -59,7 +62,8 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states,
+         :supabase_url, :supabase_secret_key],
         empty_values: []
       )
     end
@@ -369,7 +373,14 @@ defmodule SymphonyElixir.Config.Schema do
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
+        supabase_url:
+          resolve_secret_setting(settings.tracker.supabase_url, System.get_env("SUPABASE_URL")),
+        supabase_secret_key:
+          resolve_secret_setting(
+            settings.tracker.supabase_secret_key,
+            System.get_env("SUPABASE_SECRET_KEY")
+          )
     }
 
     workspace = %{

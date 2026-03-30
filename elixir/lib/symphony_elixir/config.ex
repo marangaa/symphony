@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in ["linear", "supabase", "memory"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
@@ -127,6 +127,14 @@ defmodule SymphonyElixir.Config do
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
+
+      settings.tracker.kind == "supabase" and
+          (not is_binary(settings.tracker.supabase_url) or settings.tracker.supabase_url == "") ->
+        {:error, :missing_supabase_url}
+
+      settings.tracker.kind == "supabase" and
+          (not is_binary(settings.tracker.supabase_secret_key) or settings.tracker.supabase_secret_key == "") ->
+        {:error, :missing_supabase_secret_key}
 
       true ->
         :ok

@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
-  Polls Linear and dispatches repository copies to Codex-backed workers.
+  Polls the configured issue tracker (Linear or Supabase) and dispatches
+  per-issue workspaces to coding-agent workers.
   """
 
   use GenServer

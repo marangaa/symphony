@@ -1,6 +1,11 @@
 defmodule SymphonyElixir.Tracker do
   @moduledoc """
   Adapter boundary for issue tracker reads and writes.
+
+  Supported tracker kinds:
+  - `"supabase"` → `SymphonyElixir.Supabase.Adapter` (default, reads roadmap_items)
+  - `"linear"`   → `SymphonyElixir.Linear.Adapter`
+  - `"memory"`   → `SymphonyElixir.Tracker.Memory` (tests only)
   """
 
   alias SymphonyElixir.Config
@@ -39,6 +44,7 @@ defmodule SymphonyElixir.Tracker do
   @spec adapter() :: module()
   def adapter do
     case Config.settings!().tracker.kind do
+      "supabase" -> SymphonyElixir.Supabase.Adapter
       "memory" -> SymphonyElixir.Tracker.Memory
       _ -> SymphonyElixir.Linear.Adapter
     end

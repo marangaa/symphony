@@ -1,7 +1,8 @@
 ---
 tracker:
-  kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  kind: supabase
+  supabase_url: $SUPABASE_URL
+  supabase_secret_key: $SUPABASE_SECRET_KEY
   active_states:
     - Todo
     - In Progress
@@ -36,23 +37,21 @@ codex:
     type: workspaceWrite
 ---
 
-You are working on a Linear ticket `{{ issue.identifier }}`
+You are working on a roadmap item `{{ issue.identifier }}`
 
 {% if attempt %}
 Continuation context:
 
-- This is retry attempt #{{ attempt }} because the ticket is still in an active state.
+- This is retry attempt #{{ attempt }} because the item is still in an active state.
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
   {% endif %}
 
-Issue context:
+Item context:
 Identifier: {{ issue.identifier }}
 Title: {{ issue.title }}
 Current status: {{ issue.state }}
-Labels: {{ issue.labels }}
-URL: {{ issue.url }}
 
 Description:
 {% if issue.description %}
