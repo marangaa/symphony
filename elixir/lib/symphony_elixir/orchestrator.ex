@@ -133,16 +133,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           case reason do
             :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-              state
-              |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              maybe_schedule_continuation_retry(state, issue_id, running_entry, session_id)
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -265,7 +256,13 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        tracker_kind = try do
+          Config.settings!().tracker.kind
+        rescue
+          _ -> "tracker"
+        end
+
+        Logger.error("Failed to fetch from #{tracker_kind}: #{inspect(reason)}")
         state
 
       false ->
@@ -700,6 +697,11 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
+        # For Supabase tracker: the agent has no linear_graphql tool to update
+        # state itself. The orchestrator auto-advances Todo → In Progress at
+        # dispatch time so the agent starts in the correct state.
+        maybe_advance_supabase_todo_state(issue)
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -769,6 +771,50 @@ defmodule SymphonyElixir.Orchestrator do
       | completed: MapSet.put(state.completed, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp maybe_schedule_continuation_retry(%State{} = state, issue_id, running_entry, session_id)
+       when is_binary(issue_id) and is_map(running_entry) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    worker_host = Map.get(running_entry, :worker_host)
+    workspace_path = Map.get(running_entry, :workspace_path)
+
+    base_state = complete_issue(state, issue_id)
+
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [%Issue{} = refreshed_issue | _]} ->
+        normalized_state = normalize_issue_state(refreshed_issue.state || "")
+
+        cond do
+          normalized_state == "in progress" ->
+            Logger.info("Agent task completed for issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; scheduling in-progress continuation check")
+
+            schedule_issue_retry(base_state, issue_id, 1, %{
+              identifier: identifier,
+              delay_type: :continuation,
+              worker_host: worker_host,
+              workspace_path: workspace_path
+            })
+
+          terminal_issue_state?(refreshed_issue.state, terminal_state_set()) ->
+            Logger.info("Agent task completed for issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; state is terminal (#{refreshed_issue.state}), cleaning up workspace and releasing claim")
+
+            cleanup_issue_workspace(identifier, worker_host)
+            release_issue_claim(base_state, issue_id)
+
+          true ->
+            Logger.info("Agent task completed for issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; state is #{refreshed_issue.state}, skipping continuation retry")
+            release_issue_claim(base_state, issue_id)
+        end
+
+      {:ok, []} ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; item no longer visible, releasing claim")
+        release_issue_claim(base_state, issue_id)
+
+      {:error, reason} ->
+        Logger.warning("Agent task completed for issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; failed to refresh issue state for continuation check: #{inspect(reason)}")
+        release_issue_claim(base_state, issue_id)
+    end
   end
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
@@ -879,6 +925,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
+
+  # For Supabase tracker: the agent has no state-update tool, so Symphony
+  # must do the Todo → In Progress transition at claim time.
+  defp maybe_advance_supabase_todo_state(%Issue{id: issue_id, state: "Todo"}) do
+    case Config.settings!().tracker.kind do
+      "supabase" ->
+        case Tracker.update_issue_state(issue_id, "In Progress") do
+          :ok ->
+            Logger.info("[Orchestrator] Auto-advanced issue #{issue_id} Todo → In Progress (supabase)")
+
+          {:error, reason} ->
+            Logger.warning("[Orchestrator] Failed to auto-advance #{issue_id} Todo → In Progress: #{inspect(reason)}")
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_advance_supabase_todo_state(_issue), do: :ok
 
   defp run_terminal_workspace_cleanup do
     case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do

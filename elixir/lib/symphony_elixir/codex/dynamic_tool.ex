@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Config, Linear.Client, Tracker}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -26,11 +26,62 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @supabase_update_state_tool "supabase_update_state"
+  @supabase_update_state_description """
+  Update the state of the current roadmap item in Supabase.
+  Use this to transition the item to Human Review, Rework, Done, or any other valid state.
+  Only available when Symphony is running with tracker.kind = "supabase".
+  """
+  @supabase_update_state_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "state"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "The UUID of the roadmap item to update (tracker_item_id from the issue context)."
+      },
+      "state" => %{
+        "type" => "string",
+        "description" => "Target state name. Valid values: In Progress, Human Review, Rework, Merging, Done, Closed."
+      }
+    }
+  }
+
+  @supabase_set_pr_url_tool "supabase_set_pr_url"
+  @supabase_set_pr_url_description """
+  Record the GitHub PR URL for this roadmap item in Supabase.
+  Call this immediately after opening a PR (before moving to Human Review).
+  This triggers an inbox notification so the team can review and approve the build.
+  Only available when Symphony is running with tracker.kind = "supabase".
+  """
+  @supabase_set_pr_url_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "pr_url"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "The UUID of the roadmap item (tracker_item_id from the issue context)."
+      },
+      "pr_url" => %{
+        "type" => "string",
+        "description" => "The full GitHub PR URL, e.g. https://github.com/org/repo/pull/42"
+      }
+    }
+  }
+
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case tool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
+
+      @supabase_update_state_tool ->
+        execute_supabase_update_state(arguments)
+
+      @supabase_set_pr_url_tool ->
+        execute_supabase_set_pr_url(arguments)
 
       other ->
         failure_response(%{
@@ -44,14 +95,148 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @spec tool_specs() :: [map()]
   def tool_specs do
-    [
+    base = [
       %{
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
       }
     ]
+
+    # Add supabase tools only when running in supabase tracker mode
+    case tracker_kind() do
+      "supabase" ->
+        base ++
+          [
+            %{
+              "name" => @supabase_update_state_tool,
+              "description" => @supabase_update_state_description,
+              "inputSchema" => @supabase_update_state_input_schema
+            },
+            %{
+              "name" => @supabase_set_pr_url_tool,
+              "description" => @supabase_set_pr_url_description,
+              "inputSchema" => @supabase_set_pr_url_input_schema
+            }
+          ]
+
+      _ ->
+        base
+    end
   end
+
+  defp execute_supabase_update_state(arguments) when is_map(arguments) do
+    issue_id = Map.get(arguments, "issue_id") || Map.get(arguments, :issue_id)
+    state = Map.get(arguments, "state") || Map.get(arguments, :state)
+
+    cond do
+      tracker_kind() != "supabase" ->
+        failure_response(%{
+          "error" => %{
+            "message" => "supabase_update_state is only available when tracker.kind is \"supabase\"."
+          }
+        })
+
+      not is_binary(issue_id) or String.trim(issue_id) == "" ->
+        failure_response(%{
+          "error" => %{"message" => "issue_id must be a non-empty string."}
+        })
+
+      not is_binary(state) or String.trim(state) == "" ->
+        failure_response(%{
+          "error" => %{"message" => "state must be a non-empty string."}
+        })
+
+      true ->
+        case Tracker.update_issue_state(String.trim(issue_id), String.trim(state)) do
+          :ok ->
+            %{
+              "success" => true,
+              "output" => "State updated to \"#{state}\" for issue #{issue_id}.",
+              "contentItems" => [
+                %{"type" => "inputText", "text" => "State updated to \"#{state}\" for issue #{issue_id}."}
+              ]
+            }
+
+          {:error, reason} ->
+            failure_response(%{
+              "error" => %{
+                "message" => "Failed to update state to \"#{state}\" for issue #{issue_id}.",
+                "reason" => inspect(reason)
+              }
+            })
+        end
+    end
+  end
+
+  defp execute_supabase_update_state(_arguments) do
+    failure_response(%{
+      "error" => %{
+        "message" => "supabase_update_state expects an object with issue_id and state fields."
+      }
+    })
+  end
+
+  defp execute_supabase_set_pr_url(arguments) when is_map(arguments) do
+    issue_id = Map.get(arguments, "issue_id") || Map.get(arguments, :issue_id)
+    pr_url = Map.get(arguments, "pr_url") || Map.get(arguments, :pr_url)
+
+    cond do
+      tracker_kind() != "supabase" ->
+        failure_response(%{
+          "error" => %{
+            "message" => "supabase_set_pr_url is only available when tracker.kind is \"supabase\"."
+          }
+        })
+
+      not is_binary(issue_id) or String.trim(issue_id) == "" ->
+        failure_response(%{
+          "error" => %{"message" => "issue_id must be a non-empty string."}
+        })
+
+      not is_binary(pr_url) or String.trim(pr_url) == "" ->
+        failure_response(%{
+          "error" => %{"message" => "pr_url must be a non-empty string."}
+        })
+
+      true ->
+        case Tracker.set_pr_url(String.trim(issue_id), String.trim(pr_url)) do
+          :ok ->
+            %{
+              "success" => true,
+              "output" => "PR URL recorded for issue #{issue_id}: #{pr_url}",
+              "contentItems" => [
+                %{"type" => "inputText", "text" => "PR URL recorded: #{pr_url}"}
+              ]
+            }
+
+          {:error, reason} ->
+            failure_response(%{
+              "error" => %{
+                "message" => "Failed to record PR URL for issue #{issue_id}.",
+                "reason" => inspect(reason)
+              }
+            })
+        end
+    end
+  end
+
+  defp execute_supabase_set_pr_url(_arguments) do
+    failure_response(%{
+      "error" => %{
+        "message" => "supabase_set_pr_url expects an object with issue_id and pr_url fields."
+      }
+    })
+  end
+
+  defp tracker_kind do
+    try do
+      Config.settings!().tracker.kind
+    rescue
+      _ -> nil
+    end
+  end
+
 
   defp execute_linear_graphql(arguments, opts) do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)

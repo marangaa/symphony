@@ -29,22 +29,65 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
-      {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+    case ensure_repo_url(issue) do
+      :ok ->
+        case Workspace.create_for_issue(issue, worker_host) do
+          {:ok, workspace} ->
+            send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
-        try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
-          end
-        after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+            try do
+              with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+                run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+              end
+            after
+              Workspace.run_after_run_hook(workspace, issue, worker_host)
+            end
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
-      {:error, reason} ->
-        {:error, reason}
+      {:error, :missing_repo_url} ->
+        mark_issue_rework_missing_repo_url(issue)
+        :ok
     end
   end
+
+  defp ensure_repo_url(%Issue{url: repo_url}) when is_binary(repo_url) do
+    if String.trim(repo_url) == "" do
+      {:error, :missing_repo_url}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_repo_url(_issue), do: {:error, :missing_repo_url}
+
+  defp mark_issue_rework_missing_repo_url(%Issue{id: issue_id, identifier: identifier})
+       when is_binary(issue_id) do
+    Logger.warning(
+      "Blocking execution for issue_id=#{issue_id} issue_identifier=#{identifier}: missing repo URL in tracker payload"
+    )
+
+    note =
+      "Execution blocked: roadmap item is missing repo_url. Set target_repo_url for this item, then retry kickoff."
+
+    _ = Tracker.create_comment(issue_id, note)
+
+    case Tracker.update_issue_state(issue_id, "Rework") do
+      :ok ->
+        Logger.info(
+          "Moved issue_id=#{issue_id} issue_identifier=#{identifier} to Rework due to missing repo URL"
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to move issue_id=#{issue_id} issue_identifier=#{identifier} to Rework: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp mark_issue_rework_missing_repo_url(_issue), do: :ok
 
   defp codex_message_handler(recipient, issue) do
     fn message ->

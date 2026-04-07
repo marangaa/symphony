@@ -298,7 +298,13 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd(
+          "sh",
+          ["-lc", command],
+          cd: workspace,
+          stderr_to_stdout: true,
+          env: hook_env(issue_context)
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -319,7 +325,16 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    env_assignments = hook_env_assignments(issue_context)
+
+    remote_command =
+      if env_assignments == "" do
+        "cd #{shell_escape(workspace)} && #{command}"
+      else
+        "cd #{shell_escape(workspace)} && #{env_assignments} #{command}"
+      end
+
+    case run_remote_command(worker_host, remote_command, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -456,28 +471,104 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+    repo_url =
+      Map.get(issue, :url) ||
+        Map.get(issue, "url")
+
+    repo_full_name =
+      Map.get(issue, :repo_full_name) ||
+        Map.get(issue, "repo_full_name") ||
+        repo_full_name_from_url(repo_url)
+
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      repo_url: repo_url,
+      repo_full_name: repo_full_name
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      repo_url: nil,
+      repo_full_name: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      repo_url: nil,
+      repo_full_name: nil
     }
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
   end
+
+  defp hook_env(issue_context) do
+    issue_id =
+      case Map.get(issue_context, :issue_id) do
+        nil -> nil
+        value -> to_string(value)
+      end
+
+    issue_identifier =
+      case Map.get(issue_context, :issue_identifier) do
+        nil -> nil
+        value -> to_string(value)
+      end
+
+    repo_url =
+      case Map.get(issue_context, :repo_url) do
+        nil -> nil
+        value -> to_string(value)
+      end
+
+    repo_full_name =
+      case Map.get(issue_context, :repo_full_name) || repo_full_name_from_url(repo_url) do
+        nil -> nil
+        value -> to_string(value)
+      end
+
+    [
+      {"SYMPHONY_ISSUE_ID", issue_id},
+      {"SYMPHONY_ISSUE_IDENTIFIER", issue_identifier},
+      {"REPO_URL", repo_url},
+      {"REPO_FULL_NAME", repo_full_name}
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+  end
+
+  defp hook_env_assignments(issue_context) do
+    issue_context
+    |> hook_env()
+    |> Enum.map(fn {key, value} -> "#{key}=#{shell_escape(value)}" end)
+    |> Enum.join(" ")
+  end
+
+  defp repo_full_name_from_url(nil), do: nil
+
+  defp repo_full_name_from_url(repo_url) when is_binary(repo_url) do
+    normalized =
+      repo_url
+      |> String.trim()
+      |> String.trim_leading("https://github.com/")
+      |> String.trim_leading("http://github.com/")
+      |> String.trim_leading("git@github.com:")
+      |> String.trim_leading("ssh://git@github.com/")
+      |> String.trim_trailing(".git")
+
+    case String.split(normalized, "/", trim: true) do
+      [owner, repo | _] when owner != "" and repo != "" -> "#{owner}/#{repo}"
+      _ -> nil
+    end
+  end
+
+  defp repo_full_name_from_url(_repo_url), do: nil
 end

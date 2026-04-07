@@ -20,17 +20,34 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+    # Clone the project repository into the workspace.
+    #
+    # REPO_URL is injected per issue by the tracker payload.
+    # It should be the selected repository URL for the specific roadmap item.
+    #
+    # Example:
+    #   export REPO_URL=git@github.com:your-org/your-repo.git
+    #
+    _repo_url="${REPO_URL:-}"
+    if [ -z "$_repo_url" ]; then
+      echo "ERROR: Missing REPO_URL. Expected per-item repo URL in tracker payload." >&2
+      exit 1
     fi
+
+    # In WSL/local unattended runs, ensure git can use the authenticated gh token
+    # for https://github.com clones.
+    if command -v gh >/dev/null 2>&1; then
+      gh auth setup-git -h github.com >/dev/null 2>&1 || gh auth setup-git >/dev/null 2>&1 || true
+    fi
+
+    git clone --depth 1 "$_repo_url" .
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    echo "Workspace cleanup for $(pwd)"
 agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=low --model gpt-5.2-codex app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -68,9 +85,29 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## State management (Supabase mode)
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+The Symphony orchestrator has already transitioned this item to `In Progress`
+when it was claimed. **Do not attempt to set the state to `In Progress` again.**
+
+For all other state transitions (e.g. `Human Review`, `Rework`, `Done`), use
+the `supabase_update_state` dynamic tool that is available in this session:
+
+```json
+{
+  "tool": "supabase_update_state",
+  "arguments": {
+    "issue_id": "{{ issue.id }}",
+    "state": "Human Review"
+  }
+}
+```
+
+Valid target states: `In Progress`, `Human Review`, `Rework`, `Merging`, `Done`, `Closed`.
+
+Progress notes are written to the Supabase `loop_events` table by the
+orchestrator. You do not need any Linear MCP tool or `linear_graphql` tool —
+do not stop or ask for them.
 
 ## Default posture
 
@@ -79,11 +116,11 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Spend extra effort up front on planning and verification design before implementation.
 - Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
 - Keep ticket metadata current (state, checklist, acceptance criteria, links).
-- Treat a single persistent Linear comment as the source of truth for progress.
+- Treat a single persistent workpad comment as the source of truth for progress.
 - Use that single workpad comment for all progress and handoff notes; do not post separate "done"/summary comments.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: mirror it in the workpad and execute it before considering the work complete.
 - When meaningful out-of-scope improvements are discovered during execution,
-  file a separate Linear issue instead of expanding scope. The follow-up issue
+  file a separate issue instead of expanding scope. The follow-up issue
   must include a clear title, description, and acceptance criteria, be placed in
   `Backlog`, be assigned to the same project as the current issue, link the
   current issue as `related`, and use `blockedBy` when the follow-up depends on
@@ -94,7 +131,6 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Related skills
 
-- `linear`: interact with Linear.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
 - `pull`: keep branch updated with latest `origin/main` before handoff.
@@ -103,7 +139,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 ## Status map
 
 - `Backlog` -> out of scope for this workflow; do not modify.
-- `Todo` -> queued; immediately transition to `In Progress` before active work.
+- `Todo` -> the orchestrator already transitions this to `In Progress` at claim time. If you see `Todo`, proceed as `In Progress`.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
 - `In Progress` -> implementation actively underway.
 - `Human Review` -> PR is attached and validated; waiting on human approval.
@@ -117,7 +153,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 2. Read the current state.
 3. Route to the matching flow:
    - `Backlog` -> do not modify issue content/state; stop and wait for human to move it to `Todo`.
-   - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
+   - `Todo` -> orchestrator has already moved to `In Progress`; treat as `In Progress` and proceed directly.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
    - `Human Review` -> wait and poll for decision/review updates.
@@ -127,11 +163,11 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `Todo` tickets, do startup sequencing in this exact order:
-   - `update_issue(..., state: "In Progress")`
+5. For `In Progress` (including items that started as `Todo`) do startup sequencing in this exact order:
    - find/create `## Codex Workpad` bootstrap comment
+   - Use `supabase_update_state` to transition states when needed (see State management section above)
    - only then begin analysis/planning/implementation work.
-6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
+6. Add a short workpad note if state and issue content are inconsistent, then proceed with the safest flow.
 
 ## Step 1: Start/continue execution (Todo or In Progress)
 
@@ -214,7 +250,11 @@ Use this only when completion is blocked by missing required tools or missing au
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
-8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
+8.  Record the PR URL using the `supabase_set_pr_url` dynamic tool immediately after the PR is opened:
+    ```json
+    {"tool":"supabase_set_pr_url","arguments":{"issue_id":"{{ issue.id }}","pr_url":"<full GitHub PR URL>"}}
+    ```
+    This writes the PR link to the roadmap item and triggers an inbox review notification for the team.
     - Ensure the GitHub PR has label `symphony` (add it if missing).
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.

@@ -56,6 +56,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Path.basename(first_workspace) == "MT_Det"
   end
 
+  test "workspace root with tilde resolves and supports bootstrap folder structure" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-home-root-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn ->
+      File.rm_rf(test_root)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: "~/code/symphony-workspaces",
+      hook_after_create: "mkdir -p repo/app/components tmp/cache && echo ok > repo/app/components/marker.txt"
+    )
+
+    assert {:ok, workspace} = Workspace.create_for_issue("MT-HOME-ROOT")
+
+    expected_workspace = Path.join([Path.expand("~"), "code", "symphony-workspaces", "MT-HOME-ROOT"])
+
+    assert workspace == expected_workspace
+    assert File.dir?(Path.join(workspace, "repo/app/components"))
+    assert File.dir?(Path.join(workspace, "tmp/cache"))
+    assert File.read!(Path.join(workspace, "repo/app/components/marker.txt")) == "ok\n"
+  end
+
   test "workspace reuses existing issue directory without deleting local changes" do
     workspace_root =
       Path.join(
@@ -1254,19 +1280,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
       System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
 
-      File.write!(fake_ssh, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
-      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
-
-      case "$*" in
-        *"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
-          ;;
-      esac
-
-      exit 0
-      """)
+      File.write!(
+        fake_ssh,
+        "#!/bin/sh\n" <>
+          "trace_file=\"${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}\"\n" <>
+          "printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"\n" <>
+          "printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'\n" <>
+          "exit 0\n"
+      )
 
       File.chmod!(fake_ssh, 0o755)
 

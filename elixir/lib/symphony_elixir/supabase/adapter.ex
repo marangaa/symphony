@@ -14,7 +14,7 @@ defmodule SymphonyElixir.Supabase.Adapter do
   alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.Issue
 
-  @select_fields "roadmap_item_id,tracker_item_id,tracker_identifier,title,state,priority,description,assigned_to_worker,blocked_by,tenant_id,created_at,updated_at"
+  @select_fields "roadmap_item_id,tracker_item_id,tracker_identifier,title,state,priority,description,assigned_to_worker,blocked_by,pr_url,repo_full_name,repo_url,tenant_id,created_at,updated_at"
   @comment_event_type "orchestrator_comment"
   @comment_metadata_source "symphony_orchestrator"
   @page_size 50
@@ -115,6 +115,45 @@ defmodule SymphonyElixir.Supabase.Adapter do
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
     tracker = Config.settings!().tracker
+    target_state = String.trim(state_name)
+
+    with :ok <- validate_supabase_settings(tracker) do
+      case ensure_human_review_pr_url(tracker, issue_id, target_state) do
+        :ok ->
+          now = DateTime.utc_now() |> DateTime.to_iso8601()
+
+          case request(
+                 tracker,
+                 :patch,
+                 "/rest/v1/roadmap_items",
+                 params: %{"id" => "eq.#{issue_id}"},
+                 body: %{
+                   "status" => target_state,
+                   "updated_at" => now
+                 },
+                 headers: [{"prefer", "return=minimal"}]
+               ) do
+            {:ok, _} ->
+              Logger.info("[Supabase Adapter] Updated issue #{issue_id} -> #{target_state}")
+              :ok
+
+            {:error, reason} ->
+              Logger.warning("[Supabase Adapter] Failed to update issue #{issue_id} state: #{inspect(reason)}")
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          Logger.warning("[Supabase Adapter] Blocked state update for issue #{issue_id} -> #{target_state}: #{inspect(reason)}")
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl SymphonyElixir.Tracker
+  @spec set_pr_url(String.t(), String.t()) :: :ok | {:error, term()}
+  def set_pr_url(issue_id, pr_url)
+      when is_binary(issue_id) and is_binary(pr_url) do
+    tracker = Config.settings!().tracker
 
     with :ok <- validate_supabase_settings(tracker) do
       now = DateTime.utc_now() |> DateTime.to_iso8601()
@@ -125,17 +164,17 @@ defmodule SymphonyElixir.Supabase.Adapter do
              "/rest/v1/roadmap_items",
              params: %{"id" => "eq.#{issue_id}"},
              body: %{
-               "status" => state_name,
+               "tracker_pr_url" => pr_url,
                "updated_at" => now
              },
              headers: [{"prefer", "return=minimal"}]
            ) do
         {:ok, _} ->
-          Logger.info("[Supabase Adapter] Updated issue #{issue_id} -> #{state_name}")
+          Logger.info("[Supabase Adapter] Set PR URL for issue #{issue_id}: #{pr_url}")
           :ok
 
         {:error, reason} ->
-          Logger.warning("[Supabase Adapter] Failed to update issue #{issue_id} state: #{inspect(reason)}")
+          Logger.warning("[Supabase Adapter] Failed to set PR URL for issue #{issue_id}: #{inspect(reason)}")
           {:error, reason}
       end
     end
@@ -193,6 +232,48 @@ defmodule SymphonyElixir.Supabase.Adapter do
     end
   end
 
+  defp ensure_human_review_pr_url(_tracker, _issue_id, target_state)
+       when target_state != "Human Review",
+       do: :ok
+
+  defp ensure_human_review_pr_url(tracker, issue_id, _target_state) do
+    case fetch_issue_pr_url(tracker, issue_id) do
+      {:ok, pr_url} when is_binary(pr_url) and pr_url != "" ->
+        :ok
+
+      {:ok, _} ->
+        {:error, :missing_pr_url_for_human_review}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fetch_issue_pr_url(tracker, issue_id) do
+    params = %{
+      "select" => "tracker_pr_url",
+      "id" => "eq.#{issue_id}",
+      "limit" => "1"
+    }
+
+    case request(tracker, :get, "/rest/v1/roadmap_items", params: params) do
+      {:ok, [%{"tracker_pr_url" => pr_url} | _]} when is_binary(pr_url) ->
+        {:ok, String.trim(pr_url)}
+
+      {:ok, [%{"tracker_pr_url" => nil} | _]} ->
+        {:ok, nil}
+
+      {:ok, []} ->
+        {:error, :issue_not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, :unexpected_response}
+    end
+  end
+
   defp normalize_rows(rows) when is_list(rows) do
     issues =
       rows
@@ -205,22 +286,30 @@ defmodule SymphonyElixir.Supabase.Adapter do
   defp normalize_rows(_), do: {:error, :unexpected_response}
 
   defp normalize_row(%{} = row) do
-    %Issue{
-      id: row["roadmap_item_id"] || row["tracker_item_id"],
-      identifier: row["tracker_identifier"] || row["roadmap_item_id"],
-      title: row["title"],
-      description: row["description"],
-      priority: parse_priority(row["priority"]),
-      state: row["state"],
-      branch_name: nil,
-      url: nil,
-      assignee_id: nil,
-      blocked_by: parse_blocked_by(row["blocked_by"]),
-      labels: [],
-      assigned_to_worker: parse_assigned_to_worker(row["assigned_to_worker"]),
-      created_at: parse_datetime(row["created_at"]),
-      updated_at: parse_datetime(row["updated_at"])
-    }
+    title = row["title"]
+    item_id = row["roadmap_item_id"] || row["tracker_item_id"]
+
+    if is_nil(title) or title == "" do
+      Logger.warning("[Supabase Adapter] Skipping item with missing title: roadmap_item_id=#{inspect(item_id)}")
+      nil
+    else
+      %Issue{
+        id: item_id,
+        identifier: row["tracker_identifier"] || item_id,
+        title: title,
+        description: row["description"],
+        priority: parse_priority(row["priority"]),
+        state: row["state"],
+        branch_name: nil,
+        url: resolve_repo_url(row),
+        assignee_id: nil,
+        blocked_by: parse_blocked_by(row["blocked_by"]),
+        labels: [],
+        assigned_to_worker: parse_assigned_to_worker(row["assigned_to_worker"]),
+        created_at: parse_datetime(row["created_at"]),
+        updated_at: parse_datetime(row["updated_at"])
+      }
+    end
   end
 
   defp normalize_row(_row), do: nil
@@ -267,10 +356,71 @@ defmodule SymphonyElixir.Supabase.Adapter do
 
   defp parse_datetime(_), do: nil
 
+  defp parse_text(nil), do: nil
+
+  defp parse_text(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp parse_text(value), do: to_string(value)
+
+  defp resolve_repo_url(%{} = row) do
+    repo_url = parse_text(row["repo_url"])
+
+    if is_binary(repo_url) do
+      repo_url
+    else
+      row
+      |> Map.get("repo_full_name")
+      |> parse_text()
+      |> repo_full_name_to_url()
+    end
+  end
+
+  defp resolve_repo_url(_row), do: nil
+
+  defp repo_full_name_to_url(nil), do: nil
+
+  defp repo_full_name_to_url(repo_full_name) when is_binary(repo_full_name) do
+    normalized = String.trim(repo_full_name)
+
+    cond do
+      normalized == "" ->
+        nil
+
+      String.starts_with?(normalized, ["http://", "https://", "git@", "ssh://"]) ->
+        normalized
+
+      String.contains?(normalized, "/") ->
+        "https://github.com/#{normalized}"
+        |> ensure_git_suffix()
+
+      true ->
+        nil
+    end
+  end
+
+  defp repo_full_name_to_url(_repo_full_name), do: nil
+
+  defp ensure_git_suffix(url) when is_binary(url) do
+    if String.ends_with?(url, ".git"), do: url, else: url <> ".git"
+  end
+
   defp build_in_filter([]), do: "in.()"
 
   defp build_in_filter(values) when is_list(values) do
-    joined = Enum.map_join(values, ",", &URI.encode(&1))
+    # PostgREST in.() filter requires raw comma-separated values inside the
+    # parentheses. Do NOT URI-encode the values — percent-encoding spaces as
+    # %20 produces invalid filter syntax and causes the query to return empty
+    # results. Only double-quote values that contain commas or parentheses to
+    # avoid ambiguity in the filter string itself.
+    joined =
+      Enum.map_join(values, ",", fn v ->
+        s = to_string(v)
+        if String.contains?(s, [",", "(", ")"]), do: ~s("#{s}"), else: s
+      end)
+
     "in.(#{joined})"
   end
 
@@ -291,7 +441,7 @@ defmodule SymphonyElixir.Supabase.Adapter do
   # HTTP request helper (mirrors the pattern in supabase/client.ex)
   # ---------------------------------------------------------------------------
 
-  defp request(tracker, method, path, opts \\ []) do
+  defp request(tracker, method, path, opts) do
     url = String.trim_trailing(tracker.supabase_url, "/") <> path
     headers = supabase_headers(tracker)
     params = Keyword.get(opts, :params, %{})

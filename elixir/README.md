@@ -140,7 +140,8 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
+    _repo_url="${REPO_URL:-}"
+    git clone --depth 1 "$_repo_url" .
 codex:
   command: "$CODEX_BIN app-server --model gpt-5.3-codex"
 ```
@@ -150,6 +151,24 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+
+## Server Deployment and Multi-User Sandbox Guidance
+
+For shared environments, run Symphony as a service process instead of from individual user shells.
+
+- Run one Symphony process per environment (or per tenant boundary) under a dedicated service account.
+- Keep `workspace.root` on a Linux path owned by that account (for example, `~/code/symphony-workspaces` or `/srv/symphony/workspaces`).
+- Avoid Windows-style roots like `C:/...` when Symphony runs in Linux/WSL.
+- Keep `codex.thread_sandbox` set to `workspace-write` so each issue stays scoped to its own workspace.
+- Scope GitHub/Supabase credentials to the service account and least privileges needed.
+
+### Clone vs Worktree
+
+Default recommendation: clone per issue workspace.
+
+- Clone per issue is simpler operationally and provides stronger isolation for shared servers.
+- Git worktrees can reduce disk and network use on a single trusted host, but they share repository internals and require stricter lifecycle coordination.
+- If you adopt worktrees later, use explicit lock/cleanup policies and keep per-tenant separation.
 
 ## Web dashboard
 
